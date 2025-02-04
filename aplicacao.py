@@ -6,6 +6,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 import os.path
 import pandas as pd
 import plotly.express as px
+import psycopg2
+from psycopg2 import sql
 import logging
 
 # Configurações da página
@@ -99,7 +101,7 @@ progress_text.markdown(
     unsafe_allow_html=True)
 
 # Simula o carregamento dos dados com progresso circular
-sheets = ['SERVIDORES', 'ESTAGIÁRIOS', 'ESTAGIÁRIOS NOVOS']
+sheets = ['SERVIDORES 2025', 'ESTAGIÁRIOS', 'ESTAGIÁRIOS NOVOS']
 dfs = {}
 
 for i, sheet_name in enumerate(sheets):
@@ -171,14 +173,14 @@ def filtrar_registros(df):
         ]
 
 # Aplicar filtros
-df_servidores_vazio = filtrar_registros(dfs['SERVIDORES'])
+df_servidores_2025_vazio = filtrar_registros(dfs['SERVIDORES 2025'])
 df_estagiarios_novos_vazio = filtrar_registros(dfs['ESTAGIÁRIOS NOVOS'])
 df_estagiarios_vazio = filtrar_registros(dfs['ESTAGIÁRIOS'])
 
 # Filtrar registros onde 'Pendência' é diferente de 'DEFERIDO' ou 'deferido' e 'Resolvido?' é diferente de 'sim'
-df_servidores_vazio_diferente = dfs['SERVIDORES'][
-    (~dfs['SERVIDORES']['Pendência'].str.lower().isin(['deferido'])) &
-    (~dfs['SERVIDORES']['Resolvido?'].str.lower().isin(['sim']))
+df_servidores_2025_vazio_diferente = dfs['SERVIDORES 2025'][
+    (~dfs['SERVIDORES 2025']['Pendência'].str.lower().isin(['deferido'])) &
+    (~dfs['SERVIDORES 2025']['Resolvido?'].str.lower().isin(['sim']))
     ]
 
 # Estilos CSS
@@ -210,10 +212,10 @@ def exibir_dataframe_com_total(df, titulo):
     st.write(f"Total de registros: {len(df)}")
 
 # Exibir os DataFrames filtrados com total de registros
-exibir_dataframe_com_total(df_servidores_vazio, "SERVIDORES")
+exibir_dataframe_com_total(df_servidores_2025_vazio, "SERVIDORES 2025")
 exibir_dataframe_com_total(df_estagiarios_novos_vazio, "ESTAGIÁRIOS NOVOS")
 exibir_dataframe_com_total(df_estagiarios_vazio, "ESTAGIÁRIOS")
-exibir_dataframe_com_total(df_servidores_vazio_diferente, "Servidores com Pendências")
+exibir_dataframe_com_total(df_servidores_2025_vazio_diferente, "Servidores com Pendências")
 
 # Contagem de importações e gráfico
 st.markdown("<h2 style='text-align: center;'>Importações</h2>", unsafe_allow_html=True)
@@ -223,16 +225,16 @@ def filtrar_registros_resolvidos(df):
     return df[df['Resolvido?'].str.lower() == 'sim']
 
 # Aplicar filtro para registros resolvidos
-df_servidores_resolvidos = filtrar_registros_resolvidos(dfs['SERVIDORES'])
+df_servidores_2025_resolvidos = filtrar_registros_resolvidos(dfs['SERVIDORES 2025'])
 df_estagiarios_novos_resolvidos = filtrar_registros_resolvidos(dfs['ESTAGIÁRIOS NOVOS'])
 df_estagiarios_resolvidos = filtrar_registros_resolvidos(dfs['ESTAGIÁRIOS'])
 
 # Dados para o gráfico
 importacoes_resolvidas = {
-    "SERVIDORES": len(df_servidores_resolvidos),
+    "SERVIDORES 2025": len(df_servidores_2025_resolvidos),
     "ESTAGIÁRIOS NOVOS": len(df_estagiarios_novos_resolvidos),
     "ESTAGIÁRIOS": len(df_estagiarios_resolvidos),
-    "Servidores com Pendências": len(df_servidores_vazio_diferente)
+    "Servidores com Pendências": len(df_servidores_2025_vazio_diferente)
 }
 
 # Criar DataFrame para o gráfico
@@ -240,7 +242,7 @@ df_importacoes_resolvidas = pd.DataFrame(list(importacoes_resolvidas.items()), c
 
 # Definir cores para cada categoria
 cores = {
-    "SERVIDORES": "blue",
+    "SERVIDORES 2025": "blue",
     "ESTAGIÁRIOS NOVOS": "green",
     "ESTAGIÁRIOS": "orange",
     "Servidores com Pendências": "red"
