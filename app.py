@@ -5,307 +5,194 @@ from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 import os.path
 import pandas as pd
-import plotly.express as px
-import psycopg2
-from psycopg2 import sql
 import logging
+from gspread.exceptions import APIError, WorksheetNotFound, SpreadsheetNotFound
 
-# Configurações da página
-st.set_page_config(page_title="Lista de Servidores para Importação para o sistema pessoas TJPI", page_icon="📊")
+# Configuração de logging
+logging.basicConfig(level=logging.DEBUG)
 
-# Título da aplicação
-st.title("Servidores para Importação TJPI")
+# 1. Configuração Inicial
+st.set_page_config(page_title="Sistema de Importação TJPI", page_icon="📊")
+st.title("Importação de Servidores")
 
-# Escopos necessários para acessar o Google Sheets
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+# 2. Autenticação
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly "]
 
-# Função para autenticar e obter credenciais
 def get_credentials():
+    """Obtém ou atualiza as credenciais OAuth2."""
     creds = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
-    return creds
+    try:
+        if os.path.exists("token.json"):
+            creds = Credentials.from_authorized_user_file("token.json", SCOPES)
 
-# Autenticação
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                if not os.path.exists("client_secret.json"):
+                    st.error("Arquivo client_secret.json não encontrado!")
+                    return None
+                flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
+                creds = flow.run_local_server(port=0)
+
+            with open("token.json", "w") as token:
+                token.write(creds.to_json())
+        return creds
+    except Exception as e:
+        st.error(f"Erro na autenticação: {str(e)}")
+        return None
+
 creds = get_credentials()
-gc = gspread.authorize(creds)
+if not creds:
+    st.stop()
 
-# Função para carregar dados da planilha
-def carregar_dados(sheet_name):
-    worksheet = gc.open_by_key('16hzIW5ImASPiEIwvzgoQfFo1y-b2nYrK9rDyK4qTWUQ').worksheet(sheet_name)
-    return pd.DataFrame(worksheet.get_all_records())
+try:
+    gc = gspread.authorize(creds)
+except Exception as e:
+    st.error(f"Erro na autorização do gspread: {str(e)}")
+    st.stop()
 
-# Estilos CSS para o progresso circular
-st.markdown("""
-    <style>
-        .circle-wrap {
-            margin: 50px auto;
-            width: 150px;
-            height: 150px;
-            background: #f7f7f7;
-            border-radius: 50%;
-            position: relative;
-        }
+# 3. Configuração da Planilha
+SHEET_ID = '16hzIW5ImASPiEIwvzgoQfFo1y-b2nYrK9rDyK4qTWUQ'
 
-        .circle-wrap .circle .mask,
-        .circle-wrap .circle .fill {
-            width: 150px;
-            height: 150px;
-            position: absolute;
-            border-radius: 50%;
-        }
+# 4. Listar todas as planilhas disponíveis
+def listar_todas_planilhas():
+    """Lista todas as abas (worksheets) da planilha"""
+    try:
+        spreadsheet = gc.open_by_key(SHEET_ID)
+        return [ws.title for ws in spreadsheet.worksheets()]
+    except SpreadsheetNotFound:
+        st.error(f"Planilha com ID {SHEET_ID} não encontrada!")
+        return []
+    except Exception as e:
+        st.error(f"Erro ao listar planilhas: {str(e)}")
+        return []
 
-        .circle-wrap .circle .mask {
-            clip: rect(0px, 150px, 150px, 75px);
-        }
+planilhas_disponiveis = listar_todas_planilhas()
+if not planilhas_disponiveis:
+    st.stop()
 
-        .circle-wrap .circle .fill {
-            clip: rect(0px, 75px, 150px, 0px);
-            background-color: #3498db;
-        }
+# Exibir as planilhas disponíveis
+st.markdown("### 🗂️ Abas disponíveis no Google Sheets:")
+for nome in planilhas_disponiveis:
+    st.code(nome)
 
-        .circle-wrap .circle .mask.full,
-        .circle-wrap .circle .fill.fix {
-            clip: rect(auto, auto, auto, auto);
-        }
+# Mostrar quais abas foram realmente encontradas no ambiente de produção
+st.markdown("### 📂 Abas encontradas na planilha (exatamente como estão):")
+st.write(planilhas_disponiveis)
 
-        .circle-wrap .inside-circle {
-            width: 120px;
-            height: 120px;
-            border-radius: 50%;
-            background: #fff;
-            line-height: 120px;
-            text-align: center;
-            margin-top: 15px;
-            margin-left: 15px;
-            position: absolute;
-            z-index: 100;
-            font-weight: 700;
-            font-size: 20px;
-        }
-    </style>
-""", unsafe_allow_html=True)
+# 5. Planilhas que queremos usar
+PLANILHAS_DESEJADAS = ['SERVIDORES 2025', 'ESTAGIÁRIOS NOVOS', 'REFAZER ESOCIAL']
 
-# Exibe o círculo de progresso e a porcentagem
-progress_text = st.empty()
-progress_text.markdown(
-    '<div class="circle-wrap"><div class="circle"><div class="mask full"><div class="fill"></div></div><div class="mask half"><div class="fill"></div><div class="fill fix"></div></div></div><div class="inside-circle">0%</div></div>',
-    unsafe_allow_html=True)
+# Filtrar apenas as planilhas que existem (com comparação case-insensitive e sem espaço extra)
+planilhas_para_carregar = []
+planilhas_ignoradas = []
 
-# Simula o carregamento dos dados com progresso circular
-sheets = ['SERVIDORES', 'ESTAGIÁRIOS', 'ESTAGIÁRIOS NOVOS']
+for sheet_name in PLANILHAS_DESEJADAS:
+    found = False
+    normalized = sheet_name.strip().lower()
+    for ws_title in planilhas_disponiveis:
+        if ws_title.strip().lower() == normalized:
+            planilhas_para_carregar.append(ws_title)
+            found = True
+            break
+    if not found:
+        planilhas_ignoradas.append(sheet_name)
+
+# Mostrar quais planilhas serão carregadas
+st.markdown("### 📥 Abas selecionadas para importação:")
+for nome in planilhas_para_carregar:
+    st.success(f"✔️ {nome}")
+
+# Avisar sobre planilhas desejadas que não existem
+if planilhas_ignoradas:
+    st.warning(f"As seguintes planilhas foram ignoradas porque não foram encontradas: {', '.join(planilhas_ignoradas)}")
+
+if not planilhas_para_carregar:
+    st.error("Nenhuma das planilhas desejadas foi encontrada!")
+    st.stop()
+
+# 6. Função para carregar dados com tratamento de erros
+def carregar_planilha_segura(sheet_name):
+    """Carrega uma aba com segurança, ignorando diferenças mínimas de nome"""
+    try:
+        logging.debug(f"Tentando carregar a planilha: {sheet_name}")
+        spreadsheet = gc.open_by_key(SHEET_ID)
+
+        # Normaliza o nome da aba desejada
+        sheet_name_normalized = sheet_name.strip().lower()
+
+        # Busca pela aba com comparação case-insensitive e sem espaços extras
+        worksheet = None
+        for ws in spreadsheet.worksheets():
+            if ws.title.strip().lower() == sheet_name_normalized:
+                worksheet = ws
+                st.info(f"Aba '{sheet_name}' encontrada com título exato: '{ws.title}'")
+                break
+
+        if not worksheet:
+            st.warning(f"Aba '{sheet_name}' não encontrada após revalidação.")
+            return pd.DataFrame()
+
+        data = worksheet.get_all_records()
+        return pd.DataFrame(data)
+
+    except WorksheetNotFound:
+        st.warning(f"Aba '{sheet_name}' não encontrada (WorksheetNotFound).")
+        return pd.DataFrame()
+    except APIError as api_err:
+        st.error(f"Erro de API ao carregar '{sheet_name}': {api_err.response.text}")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro desconhecido ao carregar '{sheet_name}': {str(e)}")
+        return pd.DataFrame()
+
+# 7. Carregar dados
 dfs = {}
+for sheet_name in planilhas_para_carregar:
+    with st.spinner(f"Carregando {sheet_name}..."):
+        df = carregar_planilha_segura(sheet_name)
+        if not df.empty:
+            dfs[sheet_name] = df
 
-for i, sheet_name in enumerate(sheets):
-    dfs[sheet_name] = carregar_dados(sheet_name)
+if not dfs:
+    st.error("Nenhuma planilha foi carregada com sucesso!")
+    st.stop()
 
-    # Atualiza a porcentagem de progresso e o CSS dinamicamente
-    percent_complete = int(((i + 1) / len(sheets)) * 100)
+st.success("Dados carregados com sucesso!")
 
-    if percent_complete == 100:
-        progress_text.markdown(f"""
-        <style>
-            .circle .mask.full .fill,
-            .circle .mask.half .fill {{
-                background-color: white;
-            }}
-            .inside-circle {{
-                content: '100%';
-            }}
-        </style>
-        <div class="circle-wrap">
-            <div class="circle">
-                <div class="mask full">
-                    <div class="fill"></div>
-                </div>
-                <div class="mask half">
-                    <div class="fill"></div>
-                    <div class="fill fix"></div>
-                </div>
-            </div>
-            <div class="inside-circle">{percent_complete}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        progress_text.markdown(f"""
-        <style>
-            .circle .mask.full .fill {{
-                transform: rotate({(percent_complete / 100) * 180}deg);
-            }}
-            .circle .mask.half .fill {{
-                transform: rotate({(percent_complete / 100) * 360}deg);
-            }}
-            .inside-circle {{
-                content: '{percent_complete}%';
-            }}
-        </style>
-        <div class="circle-wrap">
-            <div class="circle">
-                <div class="mask full">
-                    <div class="fill"></div>
-                </div>
-                <div class="mask half">
-                    <div class="fill"></div>
-                    <div class="fill fix"></div>
-                </div>
-            </div>
-            <div class="inside-circle">{percent_complete}%</div>
-        </div>
-        """, unsafe_allow_html=True)
+# 8. Função para processar dados
+def processar_dados(df):
+    """Filtra registros com base em colunas específicas"""
+    if df.empty:
+        return df
 
-# Remove a animação após o carregamento e exibe a mensagem de sucesso no centro da tela
-st.markdown('<style>.loading-text {text-align: center;}</style>', unsafe_allow_html=True)
-st.markdown('<div class="loading-text">Dados carregados com sucesso!</div>', unsafe_allow_html=True)
+    colunas_necessarias = ['Resolvido?', 'Pendência']
+    for col in colunas_necessarias:
+        if col not in df.columns:
+            st.warning(f"Coluna obrigatória '{col}' não encontrada na planilha!")
+            return pd.DataFrame()
 
-# Função para filtrar registros
-def filtrar_registros(df):
-    return df[
-        ((df['Resolvido?'].isnull()) | (df['Resolvido?'] == '') | (df['Resolvido?'] == ' ')) &
-        (df['Pendência'].str.lower() == 'deferido')
+    try:
+        return df[
+            (df['Resolvido?'].isna() | (df['Resolvido?'].astype(str).str.strip() == '')) &
+            (df['Pendência'].astype(str).str.strip().str.lower() == 'deferido')
         ]
+    except Exception as e:
+        st.error(f"Erro ao processar dados: {str(e)}")
+        return pd.DataFrame()
 
-# Aplicar filtros
-df_servidores_vazio = filtrar_registros(dfs['SERVIDORES'])
-df_estagiarios_novos_vazio = filtrar_registros(dfs['ESTAGIÁRIOS NOVOS'])
-df_estagiarios_vazio = filtrar_registros(dfs['ESTAGIÁRIOS'])
+# 9. Exibir resultados
+st.header("Resultados")
+for sheet_name, df in dfs.items():
+    st.subheader(sheet_name)
+    df_processado = processar_dados(df)
+    if not df_processado.empty:
+        st.dataframe(df_processado)
+        st.write(f"Total: {len(df_processado)} registros")
+    else:
+        st.warning("Nenhum registro encontrado após filtragem.")
 
-# Filtrar registros onde 'Pendência' é diferente de 'DEFERIDO' ou 'deferido' e 'Resolvido?' é diferente de 'sim'
-df_servidores_vazio_diferente = dfs['SERVIDORES'][
-    (~dfs['SERVIDORES']['Pendência'].str.lower().isin(['deferido'])) &
-    (~dfs['SERVIDORES']['Resolvido?'].str.lower().isin(['sim']))
-    ]
-
-# Estilos CSS
-st.markdown("""
-<style>
-    .header {
-        padding: 20px;
-        background-color: #f8f9fa;
-        border-bottom: 1px solid #e9ecef;
-        text-align: center;
-    }
-    .footer {
-        padding: 10px;
-        background-color: #f8f9fa;
-        border-top: 1px solid #e9ecef;
-        text-align: center;
-        margin-top: 20px;
-    }
-    .dataframe {
-        font-size: 14px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Função para exibir DataFrame com total de registros
-def exibir_dataframe_com_total(df, titulo):
-    st.markdown(f'<div class="header">{titulo}</div>', unsafe_allow_html=True)
-    st.dataframe(df)
-    st.write(f"Total de registros: {len(df)}")
-
-# Exibir os DataFrames filtrados com total de registros
-exibir_dataframe_com_total(df_servidores_vazio, "SERVIDORES")
-exibir_dataframe_com_total(df_estagiarios_novos_vazio, "ESTAGIÁRIOS NOVOS")
-exibir_dataframe_com_total(df_estagiarios_vazio, "ESTAGIÁRIOS")
-exibir_dataframe_com_total(df_servidores_vazio_diferente, "Servidores com Pendências")
-
-# Contagem de importações e gráfico
-st.markdown("<h2 style='text-align: center;'>Importações</h2>", unsafe_allow_html=True)
-
-# Função para filtrar registros com "Resolvido?" igual a "sim"
-def filtrar_registros_resolvidos(df):
-    return df[df['Resolvido?'].str.lower() == 'sim']
-
-# Aplicar filtro para registros resolvidos
-df_servidores_resolvidos = filtrar_registros_resolvidos(dfs['SERVIDORES'])
-df_estagiarios_novos_resolvidos = filtrar_registros_resolvidos(dfs['ESTAGIÁRIOS NOVOS'])
-df_estagiarios_resolvidos = filtrar_registros_resolvidos(dfs['ESTAGIÁRIOS'])
-
-# Dados para o gráfico
-importacoes_resolvidas = {
-    "SERVIDORES": len(df_servidores_resolvidos),
-    "ESTAGIÁRIOS NOVOS": len(df_estagiarios_novos_resolvidos),
-    "ESTAGIÁRIOS": len(df_estagiarios_resolvidos),
-    "Servidores com Pendências": len(df_servidores_vazio_diferente)
-}
-
-# Criar DataFrame para o gráfico
-df_importacoes_resolvidas = pd.DataFrame(list(importacoes_resolvidas.items()), columns=["Categoria", "Quantidade"])
-
-# Definir cores para cada categoria
-cores = {
-    "SERVIDORES": "blue",
-    "ESTAGIÁRIOS NOVOS": "green",
-    "ESTAGIÁRIOS": "orange",
-    "Servidores com Pendências": "red"
-}
-
-# Gráfico de barras
-fig = px.bar(df_importacoes_resolvidas, x="Categoria", y="Quantidade", text="Quantidade",
-             title="Importações por Categoria", color="Categoria", color_discrete_map=cores)
-fig.update_traces(texttemplate='%{text}', textposition='outside')
-st.plotly_chart(fig)
-
-# Rodapé
-st.markdown('<div class="footer">Desenvolvido pela Secretaria de Tecnologia da Informação e Comunicação - STIC</div>',
-            unsafe_allow_html=True)
-
-# Configuração do logging
-logging.basicConfig(level=logging.INFO)
-
-# Função para verificar se o registro já existe no banco de dados
-def registro_existe(conn, cpf):
-    cursor = conn.cursor()
-    query = sql.SQL("SELECT COUNT(*) FROM logs_importacao WHERE cpf = {}").format(sql.Literal(cpf))
-    cursor.execute(query)
-    count = cursor.fetchone()[0]
-    cursor.close()
-    return count > 0
-
-# Função para inserir logs no PostgreSQL
-def inserir_log(conn, cpf, nome, cargo, vinculo):
-    if not registro_existe(conn, cpf):
-        cursor = conn.cursor()
-        query = sql.SQL("INSERT INTO logs_importacao (cpf, nome, cargo, vinculo) VALUES ({}, {}, {}, {})").format(
-            sql.Literal(cpf[:14]),  # Trunca o CPF para no máximo 14 caracteres
-            sql.Literal(nome),
-            sql.Literal(cargo),
-            sql.Literal(vinculo)
-        )
-        cursor.execute(query)
-        conn.commit()
-        cursor.close()
-        logging.info(f"Registro inserido no banco de dados: CPF={cpf}, Nome={nome}, Cargo={cargo}, Vínculo={vinculo}")
-
-# Conectar ao PostgreSQL
-conn = psycopg2.connect(
-    dbname="log_importacao",
-    user="wilker",
-    password="1234",
-    host="localhost",
-    port="5432"
-)
-
-# Inserir logs para os registros resolvidos
-for df, nome_categoria in [(df_servidores_resolvidos, "SERVIDORES"),
-                           (df_estagiarios_novos_resolvidos, "ESTAGIÁRIOS NOVOS"),
-                           (df_estagiarios_resolvidos, "ESTAGIÁRIOS")]:
-    for index, row in df.iterrows():
-        # Verifique se as colunas existem antes de acessá-las
-        cpf = row.get('CPF', 'N/A')[:14]  # Trunca o CPF para no máximo 14 caracteres
-        nome = row.get('Nome', 'N/A')
-        cargo = row.get('Cargo', 'N/A')
-        vinculo = row.get('Vínculo', 'N/A')
-
-        inserir_log(conn, cpf, nome, cargo, vinculo)
-
-# Fechar a conexão com o banco de dados
-conn.close()
+# 10. Rodapé
+st.markdown("---")
+st.markdown("**Desenvolvido pela STIC**")
